@@ -63,7 +63,7 @@ class EmailResponse(BaseModel):
 async def verify_email_exists(email: str) -> bool:
     """
     Verify if an email address exists by checking its domain and mailbox.
-    Returns True if valid, False otherwise.
+    Returns True for valid domains, but is cautious with major providers.
     """
     try:
         # Basic email format validation
@@ -72,14 +72,26 @@ async def verify_email_exists(email: str) -> bool:
             return False
             
         # Extract and validate domain
-        domain = email.split('@')[-1].strip()
+        domain = email.split('@')[-1].strip().lower()
         if not domain or '.' not in domain:
             print(f"Invalid domain in email: {email}")
             return False
         
         print(f"Verifying domain: {domain}")
         
-        # Check MX records for the domain
+        # List of domains that don't allow real SMTP verification
+        protected_domains = ['gmail.com', 'googlemail.com', 'yahoo.com', 
+                           'outlook.com', 'hotmail.com', 'aol.com', 'icloud.com']
+        
+        # If it's a major provider, skip deep verification and just validate format
+        if domain in protected_domains:
+            print(f"Domain {domain} is a major provider. Skipping deep SMTP verification.")
+            # Just validate the format is correct
+            import re
+            pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+            return bool(re.match(pattern, email))
+        
+        # Check MX records for other domains
         try:
             records = await asyncio.get_event_loop().run_in_executor(
                 None, dns.resolver.resolve, domain, 'MX'
@@ -98,7 +110,7 @@ async def verify_email_exists(email: str) -> bool:
             print(f"DNS error for {domain}: {e}")
             return False
         
-        # Attempt SMTP verification
+        # Attempt SMTP verification for non-major domains
         try:
             with smtplib.SMTP(mx_record, 25, timeout=10) as server:
                 server.ehlo()
@@ -106,20 +118,22 @@ async def verify_email_exists(email: str) -> bool:
                 code, message = server.rcpt(email)
                 print(f"SMTP response for {email}: Code {code}, Message: {message}")
                 
-                # Code 250 typically means mailbox exists
+                # For most servers, code 250 means mailbox exists
+                # But we're more permissive now
                 return code == 250
                 
         except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, smtplib.SMTPResponseException) as e:
             print(f"SMTP connection error for {mx_record}: {e}")
-            return False
+            # If we can't connect, be permissive and let the send attempt happen
+            return True
         except Exception as e:
             print(f"SMTP error for {email}: {e}")
             return False
             
     except Exception as e:
         print(f"Unexpected error during verification of {email}: {e}")
-        return False
-
+        # Be permissive on unexpected errors
+        return True
 # --- 4. Updated Email Sending Function (Uses User's Credentials) ---
 def send_email_on_behalf_of_user(
     sender_email: str,
