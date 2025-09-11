@@ -14,11 +14,9 @@ import re
 app = FastAPI(title="Email API - Send from Your Own Account")
 
 # --- 1. Security: API Key Authentication (For Your API, Not Gmail) ---
-# This is how you will identify and charge your users
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 async def get_api_key(api_key: str = Security(api_key_header)):
-    # In a real app, you would validate this key against a database
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -61,7 +59,68 @@ class EmailResponse(BaseModel):
     message: str
     email: str
 
-# --- 3. Updated Email Sending Function (Uses User's Credentials) ---
+# --- 3. Email Verification Function ---
+async def verify_email_exists(email: str) -> bool:
+    """
+    Verify if an email address exists by checking its domain and mailbox.
+    Returns True if valid, False otherwise.
+    """
+    try:
+        # Basic email format validation
+        if '@' not in email:
+            print(f"Invalid email format: {email}")
+            return False
+            
+        # Extract and validate domain
+        domain = email.split('@')[-1].strip()
+        if not domain or '.' not in domain:
+            print(f"Invalid domain in email: {email}")
+            return False
+        
+        print(f"Verifying domain: {domain}")
+        
+        # Check MX records for the domain
+        try:
+            records = await asyncio.get_event_loop().run_in_executor(
+                None, dns.resolver.resolve, domain, 'MX'
+            )
+            if not records:
+                print(f"No MX records found for domain: {domain}")
+                return False
+                
+            mx_record = str(records[0].exchange)
+            print(f"Found MX record: {mx_record}")
+            
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.Timeout):
+            print(f"DNS resolution failed for domain: {domain}")
+            return False
+        except Exception as e:
+            print(f"DNS error for {domain}: {e}")
+            return False
+        
+        # Attempt SMTP verification
+        try:
+            with smtplib.SMTP(mx_record, 25, timeout=10) as server:
+                server.ehlo()
+                server.mail('verify@example.com')
+                code, message = server.rcpt(email)
+                print(f"SMTP response for {email}: Code {code}, Message: {message}")
+                
+                # Code 250 typically means mailbox exists
+                return code == 250
+                
+        except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, smtplib.SMTPResponseException) as e:
+            print(f"SMTP connection error for {mx_record}: {e}")
+            return False
+        except Exception as e:
+            print(f"SMTP error for {email}: {e}")
+            return False
+            
+    except Exception as e:
+        print(f"Unexpected error during verification of {email}: {e}")
+        return False
+
+# --- 4. Updated Email Sending Function (Uses User's Credentials) ---
 def send_email_on_behalf_of_user(
     sender_email: str,
     sender_app_password: str,
@@ -119,7 +178,7 @@ def send_email_on_behalf_of_user(
             detail=f"Failed to send email: {str(e)}"
         )
 
-# --- 4. Enhanced API Endpoint ---
+# --- 5. Enhanced API Endpoint ---
 @app.post("/send-email", response_model=EmailResponse)
 async def send_email(
     request: EnhancedEmailRequest,
@@ -172,9 +231,14 @@ async def send_email(
             detail=f"An unexpected error occurred: {str(e)}"
         )
 
-# (Keep your existing verify_email_exists and health_check functions here)
-# ... [The rest of your code for verify_email_exists and health_check] ...
+# Health check endpoint
+@app.get("/")
+async def health_check():
+    return {"status": "OK", "service": "Enhanced Email API"}
 
+# Run the app
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
