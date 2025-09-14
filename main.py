@@ -10,10 +10,6 @@ from email.mime.text import MIMEText
 from email.utils import formatdate
 from enum import Enum
 import re
-import os
-# Set DNS resolver to use Railway's DNS
-dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
-dns.resolver.default_resolver.nameservers = ['1.1.1.1', '8.8.8.8']  # Cloudflare and Google DNS
 
 app = FastAPI(title="Email API - Send from Your Own Account")
 
