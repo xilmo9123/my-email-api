@@ -117,7 +117,6 @@ async def verify_email_exists(email: str) -> bool:
         # Be permissive on unexpected errors
         return True
 # --- 4. Updated Email Sending Function (Uses User's Credentials) ---
-import requests
 def send_email_via_brevo(
     to_email: str,
     subject: str,
