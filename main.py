@@ -10,6 +10,8 @@ from email.mime.text import MIMEText
 from email.utils import formatdate
 from enum import Enum
 import re
+import requests
+
 
 app = FastAPI(title="Email API - Send from Your Own Account")
 
@@ -194,57 +196,51 @@ def send_email_on_behalf_of_user(
 
 # --- 5. Enhanced API Endpoint ---
 @app.post("/send-email", response_model=EmailResponse)
-async def send_email(
-    request: EnhancedEmailRequest,
-    # This ensures the user is authenticated with YOUR API before they can even try to send
-    api_key: str = Security(get_api_key)
+def send_email_via_brevo(
+    to_email: str,
+    subject: str,
+    plain_text: str = None,
+    html_content: str = None,
+    from_name: str = None,
+    reply_to: str = None
 ):
-    """
-    Verify an email address and send a message using YOUR OWN Gmail account.
+    """Sends an email using Brevo's HTTPS API"""
     
-    **Important:** You must use an App Password, not your regular Gmail password.
-    Generate one here: https://myaccount.google.com/apppasswords
-    """
+    BREVO_API_KEY = "xkeysib-your-api-key-here"  # Get from Brevo dashboard
+    BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
     
-    # First, verify the recipient email exists
-    is_valid = await verify_email_exists(request.to_email)
+    # Prepare the payload for Brevo
+    payload = {
+        "sender": {
+            "name": from_name or "Email API Service",
+            "email": "your-verified-email@yourdomain.com"  # Must verify in Brevo dashboard
+        },
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "htmlContent": html_content or plain_text,
+        "textContent": plain_text or html_content
+    }
     
-    if not is_valid:
-        return EmailResponse(
-            status="error",
-            message="Invalid recipient email address. Message not sent.",
-            email=request.to_email
-        )
+    if reply_to:
+        payload["replyTo"] = {"email": reply_to}
     
-    # If recipient is valid, send the email using the USER'S credentials
+    # Send via Brevo's HTTPS API
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY
+    }
+    
     try:
-        send_success = send_email_on_behalf_of_user(
-            sender_email=request.sender_email,
-            sender_app_password=request.sender_app_password,
-            to_email=request.to_email,
-            subject=request.subject,
-            plain_text=request.plain_text,
-            html_content=request.html_content,
-            from_name=request.from_name,
-            reply_to=request.reply_to
-        )
-        
-        if send_success:
-            return EmailResponse(
-                status="success",
-                message="Email successfully sent to valid address.",
-                email=request.to_email
-            )
-            
-    except HTTPException as he:
-        # Re-raise the HTTP exceptions from the sending function
-        raise he
+        response = requests.post(BREVO_API_URL, json=payload, headers=headers)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        return True
     except Exception as e:
+        print(f"Brevo API error: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"An unexpected error occurred: {str(e)}"
+            detail=f"Failed to send email via Brevo: {str(e)}"
         )
-
 # Health check endpoint
 @app.get("/")
 async def health_check():
