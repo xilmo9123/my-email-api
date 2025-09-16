@@ -10,7 +10,6 @@ from email.mime.text import MIMEText
 from email.utils import formatdate
 from enum import Enum
 import re
-import requests
 
 
 app = FastAPI(title="Email API - Send from Your Own Account")
@@ -118,6 +117,7 @@ async def verify_email_exists(email: str) -> bool:
         # Be permissive on unexpected errors
         return True
 # --- 4. Updated Email Sending Function (Uses User's Credentials) ---
+import requests
 def send_email_via_brevo(
     to_email: str,
     subject: str,
