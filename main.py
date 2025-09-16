@@ -34,32 +34,13 @@ async def get_api_key(api_key: str = Security(api_key_header)):
 
 # --- 2. New Input Model: Now Includes Sender Credentials ---
 class EnhancedEmailRequest(BaseModel):
-    # SENDER'S CREDENTIALS (The User of YOUR API)
-    sender_email: EmailStr
-    sender_app_password: str = Field(..., min_length=1, description="The App Password for the sender's Gmail account. NOT their regular password.")
-
-    # RECIPIENT AND CONTENT
+    # REMOVED: sender_email and sender_app_password
     to_email: EmailStr
     subject: str = "Notification from Our Service"
     plain_text: Optional[str] = Field(None, description="Plain text content")
     html_content: Optional[str] = Field(None, description="HTML content")
-    
-    # Customization
     from_name: Optional[str] = Field(None, description="Custom 'From' name")
     reply_to: Optional[EmailStr] = Field(None, description="Custom reply-to address")
-
-    # Validator to ensure we have content
-    @validator('*', always=True)
-    def check_content(cls, v, values):
-        if 'plain_text' in values and 'html_content' in values:
-            if values['plain_text'] is None and values['html_content'] is None:
-                raise ValueError('Either plain_text or html_content must be provided')
-        return v
-
-class EmailResponse(BaseModel):
-    status: str
-    message: str
-    email: str
 
 # --- 3. Email Verification Function ---
 async def verify_email_exists(email: str) -> bool:
