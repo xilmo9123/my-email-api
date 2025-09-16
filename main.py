@@ -137,65 +137,6 @@ async def verify_email_exists(email: str) -> bool:
         # Be permissive on unexpected errors
         return True
 # --- 4. Updated Email Sending Function (Uses User's Credentials) ---
-def send_email_on_behalf_of_user(
-    sender_email: str,
-    sender_app_password: str,
-    to_email: str,
-    subject: str,
-    plain_text: str = None,
-    html_content: str = None,
-    from_name: str = None,
-    reply_to: str = None
-):
-    """Sends an email using the user's own Gmail account credentials."""
-    
-    SMTP_SERVER = "smtp.gmail.com"
-    SMTP_PORT = 587
-
-    # Create email container
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    # Use the user's email and their chosen name
-    msg['From'] = f'"{from_name}" <{sender_email}>' if from_name else sender_email
-    msg['To'] = to_email
-    msg['Date'] = formatdate(localtime=True)
-    
-    if reply_to:
-        msg['Reply-To'] = reply_to
-
-    # Handle content
-    if plain_text is None and html_content is not None:
-        plain_text = re.sub('<[^<]+?>', '', html_content)
-    elif html_content is None and plain_text is not None:
-        html_content = f"<div style='font-family: Arial, sans-serif;'>{plain_text.replace(chr(10), '<br>')}</div>"
-
-    # Create both text and HTML versions
-    part1 = MIMEText(plain_text, 'plain')
-    part2 = MIMEText(html_content, 'html')
-    
-    msg.attach(part1)
-    msg.attach(part2)
-    
-    # The Key Change: Log in using the USER'S credentials, not yours.
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(sender_email, sender_app_password) # <-- USER'S CREDENTIALS
-            server.send_message(msg)
-        return True
-    except smtplib.SMTPAuthenticationError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Failed to authenticate with Gmail. Please check your email address and App Password."
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to send email: {str(e)}"
-        )
-
-# --- 5. Enhanced API Endpoint ---
-@app.post("/send-email", response_model=EmailResponse)
 def send_email_via_brevo(
     to_email: str,
     subject: str,
@@ -206,7 +147,7 @@ def send_email_via_brevo(
 ):
     """Sends an email using Brevo's HTTPS API"""
     
-    BREVO_API_KEY = "xkeysib-your-api-key-here"  # Get from Brevo dashboard
+    BREVO_API_KEY = "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"  # Get from Brevo dashboard
     BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
     
     # Prepare the payload for Brevo
@@ -241,6 +182,60 @@ def send_email_via_brevo(
             status_code=500,
             detail=f"Failed to send email via Brevo: {str(e)}"
         )
+
+# --- 5. Enhanced API Endpoint ---
+@app.post("/send-email", response_model=EmailResponse)
+async def send_email(
+    request: EnhancedEmailRequest,
+    # This ensures the user is authenticated with YOUR API before they can even try to send
+    api_key: str = Security(get_api_key)
+):
+    """
+    Verify an email address and send a message using YOUR OWN Gmail account.
+    
+    **Important:** You must use an App Password, not your regular Gmail password.
+    Generate one here: https://myaccount.google.com/apppasswords
+    """
+    
+    # First, verify the recipient email exists
+    is_valid = await verify_email_exists(request.to_email)
+    
+    if not is_valid:
+        return EmailResponse(
+            status="error",
+            message="Invalid recipient email address. Message not sent.",
+            email=request.to_email
+        )
+    
+    # If recipient is valid, send the email using the USER'S credentials
+    try:
+        send_success = send_email_on_behalf_of_user(
+            sender_email=request.sender_email,
+            sender_app_password=request.sender_app_password,
+            to_email=request.to_email,
+            subject=request.subject,
+            plain_text=request.plain_text,
+            html_content=request.html_content,
+            from_name=request.from_name,
+            reply_to=request.reply_to
+        )
+        
+        if send_success:
+            return EmailResponse(
+                status="success",
+                message="Email successfully sent to valid address.",
+                email=request.to_email
+            )
+            
+    except HTTPException as he:
+        # Re-raise the HTTP exceptions from the sending function
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"An unexpected error occurred: {str(e)}"
+        )
+
 # Health check endpoint
 @app.get("/")
 async def health_check():
