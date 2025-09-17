@@ -1,39 +1,20 @@
+# 1. IMPORTS
 from fastapi import FastAPI, HTTPException, status, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional
-import smtplib
+import requests  # For Brevo API calls
 import dns.resolver
 import asyncio
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.utils import formatdate
 from enum import Enum
 import re
 
+# 2. APP INITIALIZATION
+app = FastAPI(title="Email API - Send with Brevo")
 
-app = FastAPI(title="Email API - Send from Your Own Account")
-
-# --- 1. Security: API Key Authentication (For Your API, Not Gmail) ---
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-async def get_api_key(api_key: str = Security(api_key_header)):
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API Key",
-        )
-    # Simple hardcoded check for testing. REPLACE THIS.
-    if api_key != "TEST_KEY_123":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API Key",
-        )
-    return api_key
-
-# --- 2. New Input Model: Now Includes Sender Credentials ---
+# 3. MODELS (Must come BEFORE endpoints that use them)
 class EnhancedEmailRequest(BaseModel):
-    # REMOVED: sender_email and sender_app_password
+    # REMOVED: sender_email and sender_app_password (no longer needed)
     to_email: EmailStr
     subject: str = "Notification from Our Service"
     plain_text: Optional[str] = Field(None, description="Plain text content")
@@ -41,7 +22,25 @@ class EnhancedEmailRequest(BaseModel):
     from_name: Optional[str] = Field(None, description="Custom 'From' name")
     reply_to: Optional[EmailStr] = Field(None, description="Custom reply-to address")
 
-# --- 3. Email Verification Function ---
+    # Validator to ensure we have content
+    @validator('*', always=True)
+    def check_content(cls, v, values):
+        if 'plain_text' in values and 'html_content' in values:
+            if values['plain_text'] is None and values['html_content'] is None:
+                raise ValueError('Either plain_text or html_content must be provided')
+        return v
+
+class EmailResponse(BaseModel):
+    status: str
+    message: str
+    email: str
+
+# 4. BREVO CONFIGURATION
+BREVO_API_KEY = "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"  # REPLACE WITH YOUR BREVO API KEY
+BREVO_SENDER_EMAIL = "xilmo9123@gmail.com"  # REPLACE WITH EMAIL VERIFIED IN BREVO DASHBOARD
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
+
+# 5. FUNCTIONS
 async def verify_email_exists(email: str) -> bool:
     """
     Verify if an email address exists by checking its domain and mailbox.
@@ -69,7 +68,6 @@ async def verify_email_exists(email: str) -> bool:
         if domain in protected_domains:
             print(f"Domain {domain} is a major provider. Skipping deep SMTP verification.")
             # Just validate the format is correct
-            import re
             pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
             return bool(re.match(pattern, email))
         
@@ -94,6 +92,7 @@ async def verify_email_exists(email: str) -> bool:
         
         # Attempt SMTP verification for non-major domains
         try:
+            import smtplib
             with smtplib.SMTP(mx_record, 25, timeout=10) as server:
                 server.ehlo()
                 server.mail('verify@example.com')
@@ -101,7 +100,6 @@ async def verify_email_exists(email: str) -> bool:
                 print(f"SMTP response for {email}: Code {code}, Message: {message}")
                 
                 # For most servers, code 250 means mailbox exists
-                # But we're more permissive now
                 return code == 250
                 
         except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, smtplib.SMTPResponseException) as e:
@@ -116,7 +114,7 @@ async def verify_email_exists(email: str) -> bool:
         print(f"Unexpected error during verification of {email}: {e}")
         # Be permissive on unexpected errors
         return True
-# --- 4. Updated Email Sending Function (Uses User's Credentials) ---
+
 def send_email_via_brevo(
     to_email: str,
     subject: str,
@@ -127,19 +125,16 @@ def send_email_via_brevo(
 ):
     """Sends an email using Brevo's HTTPS API"""
     
-    BREVO_API_KEY = "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"  # Get from Brevo dashboard
-    BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
-    
     # Prepare the payload for Brevo
     payload = {
         "sender": {
             "name": from_name or "Email API Service",
-            "email": "your-verified-email@yourdomain.com"  # Must verify in Brevo dashboard
+            "email": BREVO_SENDER_EMAIL  # Use your verified Brevo sender email
         },
         "to": [{"email": to_email}],
         "subject": subject,
-        "htmlContent": html_content or plain_text,
-        "textContent": plain_text or html_content
+        "htmlContent": html_content or f"<p>{plain_text}</p>",
+        "textContent": plain_text or "Email content"
     }
     
     if reply_to:
@@ -155,26 +150,42 @@ def send_email_via_brevo(
     try:
         response = requests.post(BREVO_API_URL, json=payload, headers=headers)
         response.raise_for_status()  # Raise an exception for bad status codes
+        print(f"Brevo API response: {response.status_code}, {response.json()}")
         return True
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         print(f"Brevo API error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Brevo API error response: {e.response.text}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to send email via Brevo: {str(e)}"
         )
 
-# --- 5. Enhanced API Endpoint ---
+# 6. SECURITY & AUTHENTICATION
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def get_api_key(api_key: str = Security(api_key_header)):
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API Key",
+        )
+    # Simple hardcoded check for testing. REPLACE THIS.
+    if api_key != "TEST_KEY_123":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key",
+        )
+    return api_key
+
+# 7. ENDPOINTS
 @app.post("/send-email", response_model=EmailResponse)
 async def send_email(
     request: EnhancedEmailRequest,
-    # This ensures the user is authenticated with YOUR API before they can even try to send
     api_key: str = Security(get_api_key)
 ):
     """
-    Verify an email address and send a message using YOUR OWN Gmail account.
-    
-    **Important:** You must use an App Password, not your regular Gmail password.
-    Generate one here: https://myaccount.google.com/apppasswords
+    Verify an email address and send a message using Brevo email service.
     """
     
     # First, verify the recipient email exists
@@ -187,11 +198,9 @@ async def send_email(
             email=request.to_email
         )
     
-    # If recipient is valid, send the email using the USER'S credentials
+    # If recipient is valid, send the email using Brevo
     try:
-        send_success = send_email_on_behalf_of_user(
-            sender_email=request.sender_email,
-            sender_app_password=request.sender_app_password,
+        send_success = send_email_via_brevo(
             to_email=request.to_email,
             subject=request.subject,
             plain_text=request.plain_text,
@@ -219,7 +228,19 @@ async def send_email(
 # Health check endpoint
 @app.get("/")
 async def health_check():
-    return {"status": "OK", "service": "Enhanced Email API"}
+    return {"status": "OK", "service": "Email API with Brevo"}
+
+# Test Brevo connection endpoint
+@app.get("/test-brevo")
+async def test_brevo_connection():
+    """Test if Brevo API connection is working"""
+    try:
+        headers = {"api-key": BREVO_API_KEY}
+        response = requests.get("https://api.brevo.com/v3/account", headers=headers)
+        response.raise_for_status()
+        return {"status": "success", "message": "Brevo connection is working"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Brevo connection failed: {str(e)}")
 
 # Run the app
 if __name__ == "__main__":
