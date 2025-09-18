@@ -9,6 +9,16 @@ import asyncio
 from enum import Enum
 import re
 
+import os
+
+# Get API key from environment variable
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+if not BREVO_API_KEY:
+    raise ValueError("BREVO_API_KEY environment variable is not set. Please set it in your Railway project variables.")
+
+BREVO_SENDER_EMAIL = "your-verified-email@yourdomain.com"  # ← Change this too!
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
+
 # 2. APP INITIALIZATION
 app = FastAPI(title="Email API - Send with Brevo")
 
