@@ -39,7 +39,7 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 if not RESEND_API_KEY:
     raise ValueError("RESEND_API_KEY environment variable is not set. Please set it in your Railway project variables.")
 
-RESEND_SENDER_EMAIL = "your-verified-email@gmail.com"  # <- USE YOUR VERIFIED RESEND EMAIL
+RESEND_SENDER_EMAIL = "xilmo9123@gmail.com"  # <- USE YOUR VERIFIED RESEND EMAIL
 
 # Initialize Resend
 resend.api_key = RESEND_API_KEY
