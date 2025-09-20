@@ -3,18 +3,18 @@ from fastapi import FastAPI, HTTPException, status, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional
-import requests  # For Brevo API calls
 import dns.resolver
 import asyncio
 from enum import Enum
 import re
+import os
+import resend  # <- CHANGED TO RESEND
 
 # 2. APP INITIALIZATION
-app = FastAPI(title="Email API - Send with Brevo")
+app = FastAPI(title="Email API - Send with Resend")  # <- UPDATED
 
 # 3. MODELS (Must come BEFORE endpoints that use them)
 class EnhancedEmailRequest(BaseModel):
-    # REMOVED: sender_email and sender_app_password (no longer needed)
     to_email: EmailStr
     subject: str = "Notification from Our Service"
     plain_text: Optional[str] = Field(None, description="Plain text content")
@@ -22,7 +22,6 @@ class EnhancedEmailRequest(BaseModel):
     from_name: Optional[str] = Field(None, description="Custom 'From' name")
     reply_to: Optional[EmailStr] = Field(None, description="Custom reply-to address")
 
-    # Validator to ensure we have content
     @validator('*', always=True)
     def check_content(cls, v, values):
         if 'plain_text' in values and 'html_content' in values:
@@ -35,21 +34,15 @@ class EmailResponse(BaseModel):
     message: str
     email: str
 
-# 4. BREVO CONFIGURATION
-BREVO_API_KEY = "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"  # REPLACE WITH YOUR BREVO API KEY
-BREVO_SENDER_EMAIL = "xilmo9123@gmail.com"  # REPLACE WITH EMAIL VERIFIED IN BREVO DASHBOARD
-BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
+# 4. RESEND CONFIGURATION <- COMPLETELY CHANGED
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+if not RESEND_API_KEY:
+    raise ValueError("RESEND_API_KEY environment variable is not set. Please set it in your Railway project variables.")
 
-import os
+RESEND_SENDER_EMAIL = "your-verified-email@gmail.com"  # <- USE YOUR VERIFIED RESEND EMAIL
 
-# Get API key from environment variable
-BREVO_API_KEY = os.getenv("BREVO_API_KEY")
-if not BREVO_API_KEY:
-    raise ValueError("BREVO_API_KEY environment variable is not set. Please set it in your Railway project variables.")
-
-BREVO_SENDER_EMAIL = "xilmo9123@gmail.com"  # ← Change this too!
-BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
-
+# Initialize Resend
+resend.api_key = RESEND_API_KEY
 
 # 5. FUNCTIONS
 async def verify_email_exists(email: str) -> bool:
@@ -58,31 +51,22 @@ async def verify_email_exists(email: str) -> bool:
     Returns True for valid domains, but is cautious with major providers.
     """
     try:
-        # Basic email format validation
         if '@' not in email:
             print(f"Invalid email format: {email}")
             return False
             
-        # Extract and validate domain
         domain = email.split('@')[-1].strip().lower()
         if not domain or '.' not in domain:
             print(f"Invalid domain in email: {email}")
             return False
         
-        print(f"Verifying domain: {domain}")
-        
-        # List of domains that don't allow real SMTP verification
         protected_domains = ['gmail.com', 'googlemail.com', 'yahoo.com', 
                            'outlook.com', 'hotmail.com', 'aol.com', 'icloud.com']
         
-        # If it's a major provider, skip deep verification and just validate format
         if domain in protected_domains:
-            print(f"Domain {domain} is a major provider. Skipping deep SMTP verification.")
-            # Just validate the format is correct
             pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
             return bool(re.match(pattern, email))
         
-        # Check MX records for other domains
         try:
             records = await asyncio.get_event_loop().run_in_executor(
                 None, dns.resolver.resolve, domain, 'MX'
@@ -92,7 +76,6 @@ async def verify_email_exists(email: str) -> bool:
                 return False
                 
             mx_record = str(records[0].exchange)
-            print(f"Found MX record: {mx_record}")
             
         except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.Timeout):
             print(f"DNS resolution failed for domain: {domain}")
@@ -101,32 +84,23 @@ async def verify_email_exists(email: str) -> bool:
             print(f"DNS error for {domain}: {e}")
             return False
         
-        # Attempt SMTP verification for non-major domains
         try:
             import smtplib
             with smtplib.SMTP(mx_record, 25, timeout=10) as server:
                 server.ehlo()
                 server.mail('verify@example.com')
                 code, message = server.rcpt(email)
-                print(f"SMTP response for {email}: Code {code}, Message: {message}")
-                
-                # For most servers, code 250 means mailbox exists
                 return code == 250
                 
-        except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, smtplib.SMTPResponseException) as e:
-            print(f"SMTP connection error for {mx_record}: {e}")
-            # If we can't connect, be permissive and let the send attempt happen
+        except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, smtplib.SMTPResponseException):
             return True
-        except Exception as e:
-            print(f"SMTP error for {email}: {e}")
+        except Exception:
             return False
             
-    except Exception as e:
-        print(f"Unexpected error during verification of {email}: {e}")
-        # Be permissive on unexpected errors
+    except Exception:
         return True
 
-def send_email_via_brevo(
+def send_email_via_resend(  # <- NEW RESEND FUNCTION
     to_email: str,
     subject: str,
     plain_text: str = None,
@@ -134,42 +108,31 @@ def send_email_via_brevo(
     from_name: str = None,
     reply_to: str = None
 ):
-    """Sends an email using Brevo's HTTPS API"""
+    """Sends an email using Resend's API"""
     
-    # Prepare the payload for Brevo
-    payload = {
-        "sender": {
-            "name": from_name or "Email API Service",
-            "email": BREVO_SENDER_EMAIL  # Use your verified Brevo sender email
-        },
-        "to": [{"email": to_email}],
-        "subject": subject,
-        "htmlContent": html_content or f"<p>{plain_text}</p>",
-        "textContent": plain_text or "Email content"
-    }
-    
-    if reply_to:
-        payload["replyTo"] = {"email": reply_to}
-    
-    # Send via Brevo's HTTPS API
-    headers = {
-        "accept": "application/json",
-        "content-type": "application/json",
-        "api-key": BREVO_API_KEY
-    }
-    
+    from_email = f"{from_name} <{RESEND_SENDER_EMAIL}>" if from_name else RESEND_SENDER_EMAIL
+
     try:
-        response = requests.post(BREVO_API_URL, json=payload, headers=headers)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        print(f"Brevo API response: {response.status_code}, {response.json()}")
+        params = {
+            "from": from_email,
+            "to": [to_email],
+            "subject": subject,
+            "text": plain_text,
+            "html": html_content,
+        }
+        
+        if reply_to:
+            params["reply_to"] = reply_to
+
+        email_response = resend.Emails.send(params)
+        print(f"Resend response: {email_response}")
         return True
-    except requests.exceptions.RequestException as e:
-        print(f"Brevo API error: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"Brevo API error response: {e.response.text}")
+        
+    except Exception as e:
+        print(f"Resend API error: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to send email via Brevo: {str(e)}"
+            detail=f"Failed to send email via Resend: {str(e)}"
         )
 
 # 6. SECURITY & AUTHENTICATION
@@ -181,7 +144,6 @@ async def get_api_key(api_key: str = Security(api_key_header)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API Key",
         )
-    # Simple hardcoded check for testing. REPLACE THIS.
     if api_key != "TEST_KEY_123":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -196,10 +158,9 @@ async def send_email(
     api_key: str = Security(get_api_key)
 ):
     """
-    Verify an email address and send a message using Brevo email service.
+    Verify an email address and send a message using Resend email service.
     """
     
-    # First, verify the recipient email exists
     is_valid = await verify_email_exists(request.to_email)
     
     if not is_valid:
@@ -209,9 +170,8 @@ async def send_email(
             email=request.to_email
         )
     
-    # If recipient is valid, send the email using Brevo
     try:
-        send_success = send_email_via_brevo(
+        send_success = send_email_via_resend(  # <- CHANGED TO RESEND
             to_email=request.to_email,
             subject=request.subject,
             plain_text=request.plain_text,
@@ -228,7 +188,6 @@ async def send_email(
             )
             
     except HTTPException as he:
-        # Re-raise the HTTP exceptions from the sending function
         raise he
     except Exception as e:
         raise HTTPException(
@@ -239,23 +198,21 @@ async def send_email(
 # Health check endpoint
 @app.get("/")
 async def health_check():
-    return {"status": "OK", "service": "Email API with Brevo"}
+    return {"status": "OK", "service": "Email API with Resend"}  # <- UPDATED
 
-# Test Brevo connection endpoint
-@app.get("/test-brevo")
-async def test_brevo_connection():
-    """Test if Brevo API connection is working"""
+# Test Resend connection endpoint  # <- NEW TEST ENDPOINT
+@app.get("/test-resend")
+async def test_resend_connection():
+    """Test if Resend API connection is working"""
     try:
-        headers = {"api-key": BREVO_API_KEY}
-        response = requests.get("https://api.brevo.com/v3/account", headers=headers)
-        response.raise_for_status()
-        return {"status": "success", "message": "Brevo connection is working"}
+        # Try to get the API key info
+        result = resend.ApiKeys.get()
+        return {"status": "success", "message": "Resend connection is working", "data": result}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Brevo connection failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Resend connection failed: {str(e)}")
 
 # Run the app
 if __name__ == "__main__":
-    import os
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
